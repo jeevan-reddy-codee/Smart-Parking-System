@@ -1,0 +1,212 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ABC Mall Parking</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1b1d20;--bg:#e9e9e5;--lot:#2d3135;--paint:#ecebe4;--blue:#1c4ed8;--g:#2e9d57;--r:#d23b3b}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;font:16px/1.45 Barlow,sans-serif;background:var(--bg);color:var(--ink)}
+h1,h2,h3{font-family:'Barlow Condensed',sans-serif;margin:0 0 8px;font-weight:700}
+header{display:flex;gap:12px;align-items:center;padding:12px 20px;background:var(--blue);color:#fff}
+header h1{font-size:30px;flex:1;margin:0}header h1 b{background:#fff;color:var(--blue);padding:0 10px;border-radius:6px;margin-right:10px}
+button{font:inherit;cursor:pointer;border:0;border-radius:6px;padding:8px 14px;background:var(--ink);color:#fff}
+button.sec{background:transparent;color:inherit;border:1px solid currentColor}button:disabled{opacity:.4;cursor:default}
+main{max-width:1000px;margin:0 auto;padding:16px}#tabs{margin-bottom:12px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:16px}
+.lot{display:flex;gap:18px;flex-wrap:wrap;background:var(--lot);padding:16px;border-radius:10px}
+.sec{flex:1;min-width:280px}.sec h3{color:var(--paint)}
+.cols{display:flex}.col{flex:1;display:flex;flex-direction:column;gap:2px}
+.aisle{width:48px;margin:0 6px;display:flex;align-items:center;justify-content:center;color:var(--paint);opacity:.7;writing-mode:vertical-rl;font-size:13px;border:2px dashed #888;border-width:0 2px}
+.bay{position:relative;height:50px;border:2px solid var(--paint);border-radius:3px;color:#fff;font-weight:500;transform:skewY(var(--k,0deg));cursor:pointer}
+.bike .bay{height:38px}
+.bay.green{background:var(--g)}.bay.red{background:var(--r)}.bay.off{background:#666;opacity:.5}
+.bay.sel{outline:3px solid #ffd23f;z-index:2}.bay.mine{box-shadow:inset 0 0 0 3px var(--blue)}
+.in{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-size:14px;transform:skewY(calc(var(--k,0deg)*-1))}
+.in button{padding:1px 8px;font-size:12px;background:#ffd23f;color:#000}
+.legend{width:100%;display:flex;gap:16px;color:var(--paint);font-size:14px}.legend i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:5px}
+.m{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;padding:16px;z-index:9}
+.m>div{background:#fff;border-radius:10px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow:auto}
+label{display:block;margin:10px 0 4px;font-weight:500}input,select{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;font:inherit}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;font-size:14px}
+</style></head><body>
+<header><h1><b>P</b>ABC Mall Parking</h1><span id="who"></span></header>
+<main><div id="tabs"></div>
+<div id="p_lot"><div class="lot" id="lotv"></div><div class="card" id="det" style="margin-top:16px"></div></div>
+<div id="p_mine" class="card" hidden></div><div id="p_veh" class="card" hidden></div><div id="p_adm" class="card" hidden></div></main>
+<div id="m" class="m" style="display:none"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+// 1) Supabase project credentials
+let SB_URL = 'https://svryjfkbrmchgjvayfgr.supabase.co';
+let SB_KEY = 'sb_publishable_I6STINaam3tFMALjiQvfQw_lwiMHMW4';
+let db = null;
+const $ = s => document.querySelector(s), esc = s => String(s ?? '').replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
+const fmt=d=>new Date(d).toLocaleString([],{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
+const loc=d=>new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,16);
+const iso=v=>new Date(v).toISOString();
+let S={slots:[],tl:[],mine:[],veh:[],all:[],prices:[],me:null,sel:null,tab:'lot',asked:0};
+const modal=h=>{$('#m').innerHTML=h?`<div>${h}</div>`:'';$('#m').style.display=h?'flex':'none'};
+const run=async(p,ok)=>{const{data,error}=await p;if(error){alert(error.message);return}if(ok)ok(data);await load();return data};
+const rate=z=>S.prices.find(p=>p.vehicle_type==z)?.rate_normal;
+
+async function load(){
+ if(!db) return;
+ const u=(await db.auth.getUser()).data?.user;
+ const[a,b,pr]=await Promise.all([db.from('slot_status').select('*').order('id'),db.from('slot_timeline').select('*').order('start_time'),db.from('pricing').select('*')]);
+ if(a.error && !window._dbErrShown){
+  window._dbErrShown = true;
+  if(a.error.message && (a.error.message.includes('slot_status') || a.error.code === '42P01')){
+   modal(`<h2>⚠️ Run schema.sql</h2><p>Connected to Supabase, but the tables/views do not exist yet.</p><p>Go to your Supabase project &gt; <b>SQL Editor</b>, paste the code from <b>schema.sql</b>, and click <b>Run</b>.</p><p><button onclick="modal()">Understood</button></p>`);
+  } else if(a.error.message && (a.error.message.includes('API key') || a.error.message.includes('JWT') || a.error.message.includes('token') || a.error.message.includes('Secret'))){
+   modal(`<h2>⚠️ Supabase Key Notice</h2><p>Supabase returned: <i>${esc(a.error.message)}</i></p><p>If your project expects the JWT key, please copy the <b>anon / public</b> key (starts with <code>eyJ...</code>) from <b>Project Settings &gt; API</b>.</p><p><button onclick="showSetup()">Change Key</button></p>`);
+  }
+ }
+ S.slots=a.data||[];S.tl=b.data||[];S.prices=pr.data||[];
+ if(!u){S.me=null;S.asked=0;S.mine=[];S.veh=[]}
+ else{
+  if(!S.me||S.me.id!==u.id)S.me=(await db.from('profiles').select('*').eq('id',u.id).single()).data;
+  S.mine=(await db.from('bookings').select('*').eq('user_id',u.id).order('start_time',{ascending:false})).data||[];
+  S.veh=(await db.from('vehicles').select('*').order('id')).data||[];
+  if(S.me?.role=='admin')S.all=(await db.from('bookings').select('*,profiles(name)').order('created_at',{ascending:false}).limit(100)).data||[];
+  if(S.me&&!S.me.name_confirmed&&!S.asked){S.asked=1;nameM()}
+ }
+ draw();
+}
+function draw(){
+ if(!S.me)S.tab='lot';
+ const cfgBtn = `<button class="sec" style="font-size:13px;padding:6px 10px;margin-left:6px" onclick="showSetup()" title="Supabase Settings">⚙️ DB</button>`;
+ $('#who').innerHTML=(S.me?`${esc(S.me.name)} <button class="sec" onclick="out()">Sign out</button>`:`<button onclick="authM()">Sign in</button>`)+cfgBtn;
+ const T=[['lot','Parking map'],['mine','My bookings'],['veh','My vehicles'],...(S.me?.role=='admin'?[['adm','Admin']]:[])];
+ $('#tabs').innerHTML=S.me?T.map(([k,l])=>`<button class="${S.tab==k?'':'sec'}" onclick="S.tab='${k}';draw()">${l}</button>`).join(' '):'';
+ ['lot','mine','veh','adm'].forEach(k=>$('#p_'+k).hidden=S.tab!=k);
+ lot();detail();
+ if(S.me){mineV();vehV();if(S.me.role=='admin'&&!document.activeElement.closest('#p_adm'))admV()}
+}
+const bay=(s,k)=>{
+ const m=S.mine.find(b=>b.slot_id==s.id&&['booked','active'].includes(b.status));
+ const act=!m?'':m.status=='active'?`<button onclick="event.stopPropagation();exitB(${m.id})">Exit</button>`
+  :`<button ${new Date(m.start_time)>new Date()?'disabled':''} onclick="event.stopPropagation();run(db.rpc('enter_booking',{p_id:${m.id}}))">Enter</button>`;
+ return`<div class="bay ${s.active?s.color:'off'} ${S.sel==s.id?'sel':''} ${m?'mine':''}" style="--k:${k}deg" onclick="S.sel=${s.id};draw()"><div class="in">${s.label}${act}</div></div>`};
+function lot(){
+ const sec=(z,t,k)=>{const l=S.slots.filter(s=>s.zone==z),h=Math.ceil(l.length/2);
+  return`<div class="sec ${z}"><h3>${t}</h3><div class="cols"><div class="col">${l.slice(0,h).map(s=>bay(s,k)).join('')}</div><div class="aisle">${z=='car'?'ENTRY / DRIVE LANE':'DRIVE LANE'}</div><div class="col">${l.slice(h).map(s=>bay(s,-k)).join('')}</div></div></div>`};
+ $('#lotv').innerHTML=sec('car','Cars',18)+sec('bike','Bikes',0)+`<div class="legend"><span><i style="background:var(--g)"></i>Free now</span><span><i style="background:var(--r)"></i>Booked now</span><span><i style="background:#ffd23f"></i>Selected</span></div>`}
+function detail(){
+ const s=S.slots.find(x=>x.id==S.sel);
+ if(!s){$('#det').innerHTML='<p>Select a slot on the map to see when it is free and when it is booked.</p>';return}
+ const l=S.tl.filter(t=>t.slot_id==s.id);
+ $('#det').innerHTML=`<h2>Slot ${s.label}: ${s.zone=='car'?'car':'bike'}, ₹${rate(s.zone)} per hour</h2>
+ <p>Right now: <b style="color:var(--${s.color=='green'?'g':'r'})">${s.color=='green'?'Free':'Booked'}</b></p><h3>Booked times</h3>
+ ${l.length?'<ul>'+l.map(t=>`<li>${fmt(t.start_time)} to ${t.end_time?fmt(t.end_time):'open-ended (until exit)'}</li>`).join('')+'</ul><p>Free at all other times.</p>':'<p>No bookings. Free at all times.</p>'}
+ <button onclick="bookM(${s.id})" ${s.active?'':'disabled'}>Book this slot</button>`}
+
+function authM(){if(!db)return showSetup();modal(`<h2>Sign in</h2><button style="width:100%" onclick="db.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname}})">Continue with Google</button>
+ <form onsubmit="emailAuth(event)"><label>Name (sign up only)<input id="an"></label><label>Email<input id="ae" type="email" required></label><label>Password<input id="ap" type="password" minlength="6" required></label>
+ <p><button>Sign in</button> <button type="button" class="sec" onclick="emailAuth(event,1)">Create account</button> <button type="button" class="sec" onclick="modal()">Close</button></p></form>`)}
+async function emailAuth(e,up){e.preventDefault();const em=$('#ae').value,pw=$('#ap').value;
+ const r=up?await db.auth.signUp({email:em,password:pw,options:{data:{full_name:$('#an').value}}}):await db.auth.signInWithPassword({email:em,password:pw});
+ if(r.error)return alert(r.error.message);modal();if(up&&!r.data.session)alert('Check your email to confirm, then sign in.');load()}
+const out=()=>db.auth.signOut().then(load);
+function nameM(){modal(`<h2>Welcome</h2><p>We'll use <b>${esc(S.me.name)}</b> as your username, taken from your account name.</p><button onclick="confirmName()">Looks good</button>`)}
+async function confirmName(){const{error}=await db.from('profiles').update({name_confirmed:true}).eq('id',S.me.id);if(error)return alert(error.message);S.me.name_confirmed=true;S.veh.length?modal():vehM()}
+function vehM(){modal(`<h2>Add a vehicle</h2><form onsubmit="addV(event)"><label>Type<select id="vt"><option value="car">Car</option><option value="bike">Bike</option></select></label><label>Number plate<input id="vp" required placeholder="KA01AB1234"></label><p><button>Save vehicle</button> <button type="button" class="sec" onclick="modal()">Skip for now</button></p></form>`)}
+async function addV(e){e.preventDefault();const{error}=await db.from('vehicles').insert({user_id:S.me.id,type:$('#vt').value,plate:$('#vp').value.toUpperCase().replace(/\s/g,'')});if(error)return alert(error.message);modal();load()}
+
+function bookM(id){
+ if(!S.me)return authM();
+ const s=S.slots.find(x=>x.id==id),vs=S.veh.filter(v=>v.type==s.zone);
+ modal(`<h2>Book slot ${s.label}</h2><form onsubmit="book(event,${id})"><label>Vehicle<select id="bv" onchange="$('#bn').hidden=this.value!='new'">${vs.map(v=>`<option value="${esc(v.plate)}">${esc(v.plate)}</option>`).join('')}<option value="new">Another vehicle (not saved to my account)</option></select></label>
+ <input id="bn" placeholder="Number plate" ${vs.length?'hidden':''}>
+ <label>Entry time<input id="bs" type="datetime-local" value="${loc(new Date())}" required></label><label>Exit time (optional)<input id="be" type="datetime-local"></label>
+ <label><input id="bo" type="checkbox" style="width:auto" onchange="$('#be').disabled=this.checked"> I'm not sure when I'll leave (₹10 per hour extra)</label>
+ <p>Rate: ₹${rate(s.zone)} per hour. Free cancellation until 1 hour before entry.</p><p><button>Confirm booking</button> <button type="button" class="sec" onclick="modal()">Close</button></p></form>`)}
+async function book(e,id){e.preventDefault();let p=$('#bv').value;if(p=='new')p=$('#bn').value.trim();if(!p)return alert('Enter a number plate');
+ const open=$('#bo').checked||!$('#be').value;
+ const r=await run(db.rpc('book_slot',{p_slot:id,p_plate:p,p_start:iso($('#bs').value),p_end:open?null:iso($('#be').value)}));if(r)modal()}
+async function exitB(id){const f=await run(db.rpc('exit_booking',{p_id:id}));if(f!=null)modal(`<h2>Your bill</h2><p style="font:700 40px 'Barlow Condensed'">₹${f}</p><p>Please pay this amount at the exit toll.</p><button onclick="modal()">Done</button>`)}
+async function cancelB(id){if(!confirm('Cancel this booking? It is free more than 1 hour before entry; otherwise 1 hour is charged.'))return;const f=await run(db.rpc('cancel_booking',{p_id:id}));if(f>0)alert('Cancellation charge: ₹'+f)}
+function extM(id,cur){modal(`<h2>Extend exit time</h2><form onsubmit="ext(event,${id})"><label>New exit time<input id="ex" type="datetime-local" min="${loc(new Date(cur))}" required></label><p>Works only if no one has booked the slot after your current exit.</p><p><button>Extend</button> <button type="button" class="sec" onclick="modal()">Close</button></p></form>`)}
+async function ext(e,id){e.preventDefault();const r=await run(db.rpc('extend_booking',{p_id:id,p_end:iso($('#ex').value)}),()=>modal())}
+
+function mineV(){
+ const L=b=>S.slots.find(s=>s.id==b.slot_id)?.label;
+ $('#p_mine').innerHTML='<h2>My bookings</h2>'+(S.mine.length?'<table><tr><th>Slot<th>Vehicle<th>Time<th>Status<th></tr>'+S.mine.map(b=>`<tr><td>${L(b)}<td>${esc(b.plate)}<td>${fmt(b.start_time)} to ${b.end_time?fmt(b.end_time):'open'}<td>${b.status}${b.fee>0?` ₹${b.fee} ${b.paid?'paid':'due at toll'}`:''}
+ <td>${b.status=='booked'?`<button class="sec" onclick="cancelB(${b.id})">Cancel</button> `:''}${['booked','active'].includes(b.status)&&b.end_time?`<button class="sec" onclick="extM(${b.id},'${b.end_time}')">Extend</button>`:''}</tr>`).join('')+'</table>':'<p>No bookings yet. Pick a slot on the map.</p>')}
+function vehV(){$('#p_veh').innerHTML='<h2>My vehicles</h2>'+(S.veh.length?'<table>'+S.veh.map(v=>`<tr><td>${esc(v.plate)}<td>${v.type}<td><button class="sec" onclick="run(db.from('vehicles').delete().eq('id',${v.id}))">Remove</button></tr>`).join('')+'</table>':'<p>No saved vehicles.</p>')+'<p><button onclick="vehM()">Add vehicle</button></p>'}
+function admV(){
+ const L=b=>S.slots.find(s=>s.id==b.slot_id)?.label;
+ $('#p_adm').innerHTML=`<h2>Prices (₹ per hour)</h2><table><tr><th>Vehicle<th>Normal<th>No exit time<th></tr>${S.prices.map(p=>`<tr><td>${p.vehicle_type}<td><input id="n_${p.vehicle_type}" type="number" value="${p.rate_normal}"><td><input id="o_${p.vehicle_type}" type="number" value="${p.rate_open}"><td><button onclick="savePrice('${p.vehicle_type}')">Save</button></tr>`).join('')}</table>
+ <h2 style="margin-top:16px">Slots (tap to switch on or off)</h2><p>${S.slots.map(s=>`<button class="${s.active?'':'sec'}" onclick="run(db.from('slots').update({active:${!s.active}}).eq('id',${s.id}))">${s.label}${s.active?'':' (off)'}</button>`).join(' ')}</p>
+ <h2>All bookings</h2><table><tr><th>User<th>Slot<th>Vehicle<th>Time<th>Status<th>Fee<th></tr>${S.all.map(b=>`<tr><td>${esc(b.profiles?.name)}<td>${L(b)}<td>${esc(b.plate)}<td>${fmt(b.start_time)} to ${b.end_time?fmt(b.end_time):'open'}<td>${b.status}<td>₹${b.fee}${b.paid?' paid':''}<td>${b.fee>0&&!b.paid?`<button onclick="run(db.from('bookings').update({paid:true}).eq('id',${b.id}))">Mark paid</button>`:''}</tr>`).join('')}</table>`}
+const savePrice=t=>run(db.from('pricing').update({rate_normal:+$('#n_'+t).value,rate_open:+$('#o_'+t).value}).eq('vehicle_type',t));
+
+function showSetup(err){
+ modal(`<h2>⚙️ Supabase Backend Setup</h2>
+ <p>To connect your backend, enter your Supabase credentials below or edit lines 39 of <code>index.html</code>.</p>
+ ${err?`<div style="color:var(--r);background:#fce8e8;padding:8px 12px;border-radius:6px;font-size:14px;margin-bottom:10px"><b>Connection error:</b> ${esc(err)}</div>`:''}
+ <form onsubmit="saveSetup(event)">
+  <label>Supabase Project URL:
+   <input id="cfg_url" placeholder="https://xxxxxxxxxxxx.supabase.co" required value="${SB_URL!=='YOUR_SUPABASE_URL'?esc(SB_URL):''}">
+  </label>
+  <label>Supabase Anon Key:
+   <input id="cfg_key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." required value="${SB_KEY!=='YOUR_SUPABASE_ANON_KEY'?esc(SB_KEY):''}">
+  </label>
+  <p style="margin-top:14px">
+   <button type="submit">Save & Connect</button>
+   ${db?`<button type="button" class="sec" onclick="modal()">Cancel</button>`:''}
+   <button type="button" class="sec" onclick="resetConfig()" style="color:var(--r);border-color:var(--r)">Disconnect / Clear</button>
+  </p>
+ </form>
+ <p style="font-size:12px;color:#666;margin-top:12px">
+  📍 Found in: <b>Supabase Dashboard &gt; Project Settings &gt; API</b><br>
+  ⚡ Make sure you ran <code>schema.sql</code> in the Supabase <b>SQL Editor</b> first!
+ </p>`);
+}
+
+function saveSetup(e){
+ e.preventDefault();
+ const u=$('#cfg_url').value.trim();
+ const k=$('#cfg_key').value.trim();
+ if(!u.startsWith('http'))return alert('URL must start with https://');
+ localStorage.setItem('SB_URL',u);
+ localStorage.setItem('SB_KEY',k);
+ SB_URL=u;
+ SB_KEY=k;
+ modal();
+ initDb();
+}
+
+function resetConfig(){
+ if(confirm('Clear saved Supabase credentials?')){
+  localStorage.removeItem('SB_URL');
+  localStorage.removeItem('SB_KEY');
+  location.reload();
+ }
+}
+
+let syncTimer=null;
+function initDb(){
+ if((SB_URL==='YOUR_SUPABASE_URL'||!SB_URL)&&localStorage.getItem('SB_URL')){
+  SB_URL=localStorage.getItem('SB_URL');
+  SB_KEY=localStorage.getItem('SB_KEY');
+ }
+ if(!SB_URL||SB_URL==='YOUR_SUPABASE_URL'||!SB_URL.startsWith('http')){
+  draw();
+  showSetup();
+  return false;
+ }
+ try{
+  db=supabase.createClient(SB_URL,SB_KEY);
+  db.auth.onAuthStateChange(()=>setTimeout(load,0));
+  if(syncTimer)clearInterval(syncTimer);
+  syncTimer=setInterval(load,8000);
+  load();
+  return true;
+ }catch(err){
+  draw();
+  showSetup(err.message);
+  return false;
+ }
+}
+
+initDb();
+</script></body></html>
